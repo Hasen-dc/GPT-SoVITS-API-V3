@@ -1,6 +1,10 @@
 ## GPT-SoVITS-API-V3
 GPT-SoVITS api for v3 version
 
+### 特点
+
+该项目没有对 GPT-SoVITS 项目中的任何文件进行修改，请放心试用。
+
 ### 步骤
 
 #### 第一步 放入代码
