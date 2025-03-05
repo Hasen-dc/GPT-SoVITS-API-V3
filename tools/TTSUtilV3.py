@@ -26,6 +26,8 @@ from time import time as ttime
 from module.mel_processing import spectrogram_torch, spec_to_mel_torch
 from tools.my_utils import load_audio
 
+from peft import LoraConfig, PeftModel, get_peft_model
+from process_ckpt import get_sovits_version_from_path_fast,load_sovits_new
 
 class DictToAttrRecursive(dict):
     def __init__(self, input_dict):
@@ -216,25 +218,19 @@ class TTSUtilV3(object):
             self.model_version:
                 sovits is v1/2 (VITS) or v3 (shortcut CFM DiT)
         '''
-        size = os.path.getsize(sovits_path)
-        if size < 82978 * 1024:
-            self.model_version = version = "v1"
-        elif size < 100 * 1024 * 1024:
-            self.model_version = version = "v2"
-        elif size < 103520 * 1024:
-            self.model_version = version = "v1"
-        elif size < 700 * 1024 * 1024:
-            self.model_version = version = "v2"
-        else:
-            self.version = "v2"
-            self.model_version = "v3"
 
+        version,model_version,if_lora_v3=get_sovits_version_from_path_fast(sovits_path)
+        self.version = version
+        self.model_version = model_version
         print(f"version:{self.version}, model_version:{self.model_version}")
-        dict_s2 = torch.load(sovits_path, map_location="cpu", weights_only=False)
+
+        dict_s2 = load_sovits_new(sovits_path) #torch.load(sovits_path, map_location=self.device, weights_only=False)
         self.hps = dict_s2["config"]
         self.hps = DictToAttrRecursive(self.hps)
         self.hps.model.semantic_frame_rate = "25hz"
-        if dict_s2['weight']['enc_p.text_embedding.weight'].shape[0] == 322:
+        if 'enc_p.text_embedding.weight'not in dict_s2['weight']:
+            self.hps.model.version = "v2"#v3model,v2sybomls
+        elif dict_s2['weight']['enc_p.text_embedding.weight'].shape[0] == 322:
             self.hps.model.version = "v1"
         else:
             self.hps.model.version = "v2"
@@ -265,7 +261,24 @@ class TTSUtilV3(object):
         else:
             self.vq_model = self.vq_model.to(self.device)
         self.vq_model.eval()
-        print("loading sovits_%s" % self.model_version, self.vq_model.load_state_dict(dict_s2["weight"], strict=False))
+
+        if if_lora_v3==False:
+            print("loading sovits_%s" % self.model_version, self.vq_model.load_state_dict(dict_s2["weight"], strict=False))
+        else:
+            print("loading sovits_v3pretrained_G", self.vq_model.load_state_dict(load_sovits_new("GPT_SoVITS/pretrained_models/s2Gv3.pth")["weight"], strict=False))
+            lora_rank=dict_s2["lora_rank"]
+            lora_config = LoraConfig(
+                target_modules=["to_k", "to_q", "to_v", "to_out.0"],
+                r=lora_rank,
+                lora_alpha=lora_rank,
+                init_lora_weights=True,
+            )
+            self.vq_model.cfm = get_peft_model(self.vq_model.cfm, lora_config)
+            print("loading sovits_v3_lora%s"%(lora_rank))
+            self.vq_model.load_state_dict(dict_s2["weight"], strict=False)
+            self.vq_model.cfm = self.vq_model.cfm.merge_and_unload()
+            self.vq_model.eval()
+
         with open("./weight.json") as f:
             data = f.read()
             data = json.loads(data)
